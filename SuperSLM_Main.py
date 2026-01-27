@@ -196,7 +196,7 @@ def socket_server():
     in_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     in_sock.bind(('0.0.0.0', INPUT_PORT))
     in_sock.listen(5)
-    log_event(f"[*] NEURAL LISTENER ACTIVE ON PORT {INPUT_PORT}")
+    log_event(f"[*] LISTENER ACTIVE ON PORT {INPUT_PORT}")
 
     while True:
         conn, addr = in_sock.accept()
@@ -218,7 +218,7 @@ if __name__ == "__main__":
     embed_model, knowledge_db = load_resources()
     threading.Thread(target=socket_server, daemon=True).start()
 
-    log_event(f"[*] Neural Server online using {LLM_MODEL_NAME}.")
+    log_event(f"[*] Server online using {LLM_MODEL_NAME}.")
 
     while True:
         ui = input("\n[Local Shell] > ").strip()
