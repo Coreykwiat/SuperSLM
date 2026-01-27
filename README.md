@@ -64,3 +64,12 @@ echo "hello world" | nc <IP> 5005
 To Receive:  
 nc -l 5006
 
+## Examples
+![python script](https://github.com/user-attachments/assets/8bbe753d-169f-4757-9183-4a28992ec164)  
+![server_shell](https://github.com/user-attachments/assets/0e8ec834-b6f2-4abd-a5db-8b28be4848e6)  
+![ssh-example](https://github.com/user-attachments/assets/a1786757-64f1-461c-a707-6ffd3b6255a8)
+
+
+
+
+
