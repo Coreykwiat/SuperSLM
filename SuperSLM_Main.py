@@ -2,7 +2,7 @@ import os
 import sys
 import json
 import torch
-import fitz
+import fitz  
 import pickle
 import socket
 import threading
@@ -13,6 +13,7 @@ from docx import Document
 from bs4 import BeautifulSoup
 from sentence_transformers import SentenceTransformer, util
 
+# --- Load Configuration ---
 CONFIG_FILE = "config.json"
 
 
@@ -29,16 +30,23 @@ def load_config():
     }
     if os.path.exists(CONFIG_FILE):
         with open(CONFIG_FILE, "r") as f:
-            return {**defaults, **json.load(f)}
+            data = {**defaults, **json.load(f)}
     else:
         with open(CONFIG_FILE, "w") as f:
             json.dump(defaults, f, indent=4)
-        return defaults
+        data = defaults
+
+    
+    if not os.path.exists(data["docs_directory"]):
+        os.makedirs(data["docs_directory"])
+        print(f"[*] Created missing directory: {data['docs_directory']}")
+
+    return data
 
 
 cfg = load_config()
 
-# Assign config values
+
 DOCS_DIRECTORY = cfg["docs_directory"]
 MODEL_SAVE_PATH = cfg["model_save_path"]
 DB_CACHE_FILE = cfg["db_cache_file"]
@@ -53,7 +61,6 @@ os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
 
 
 def log_event(message):
-    """Utility to print timestamps with logs."""
     timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     print(f"[{timestamp}] {message}")
 
@@ -103,12 +110,17 @@ def extract_text(file_path):
 def reindex_docs(model):
     log_event(f"[*] (Re)Indexing docs in {DOCS_DIRECTORY}...")
     kb = []
+
+    
     if not os.path.exists(DOCS_DIRECTORY):
         os.makedirs(DOCS_DIRECTORY)
-        return []
 
     supported_ext = [".pdf", ".docx", ".txt", ".html", ".htm", ".xlsx", ".xls", ".csv"]
     files = [f for f in os.listdir(DOCS_DIRECTORY) if any(f.lower().endswith(ext) for ext in supported_ext)]
+
+    if not files:
+        log_event("[!] No supported files found in docs folder.")
+        return []
 
     for filename in files:
         path = os.path.join(DOCS_DIRECTORY, filename)
@@ -159,10 +171,9 @@ def load_resources():
 
 
 def search(model, db, query_text, client_ip="LOCAL"):
-    if not db: return "Knowledge base empty."
+    if not db: return "Knowledge base is currently empty. Please add documents to the docs folder."
 
     log_event(f"[*] Processing query from {client_ip}: {query_text[:50]}...")
-
     q_vec = model.encode(query_text, convert_to_tensor=True)
     corpus_embeddings = torch.stack([item["vec"] for item in db])
     scores = util.cos_sim(q_vec, corpus_embeddings)[0]
