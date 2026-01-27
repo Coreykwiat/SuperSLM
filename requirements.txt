@@ -1,0 +1,8 @@
+torch
+sentence-transformers
+ollama
+PyMuPDF
+python-docx
+pandas
+openpyxl
+beautifulsoup4
