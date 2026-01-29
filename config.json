@@ -5,6 +5,6 @@
     "input_port": 5005,
     "output_port": 5006,
     "ollama_url": "http://127.0.0.1:11434",
-    "embed_model_name": "sentence-transformers/all-MiniLM-L6-v2",
+    "embed_model_name": "nomic-embed-text",
     "llm_model_name": "llama3"
 }
