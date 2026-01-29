@@ -10,7 +10,7 @@ Memory: 9GB Minimum
 
 ### Software Requirements
 Ollama installed with llama3 or other model [https://ollama.com/]  
-all-MiniLM-L6-v2 [https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2]  
+Nomic Embed Text[https://ollama.com/library/nomic-embed-text]  
 Python Libraries (outlined in requirements.txt)  
     -torch  
     -sentence-transformers  
