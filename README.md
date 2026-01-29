@@ -15,7 +15,7 @@ Python Libraries (outlined in requirements.txt)
     -torch  
     -sentence-transformers  
     -ollama  
-    -PyMuPDF  
+    -pypdf  
     -python-docx  
     -pandas  
     -openpyxl  
