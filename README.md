@@ -1,5 +1,5 @@
 # SuperSLM
-SuperSLM offers the capabilities to train a Hyper-Focused Small Language Model (SLM) intended for offline local use. The intended use for this script is to have a dedicated Server/VM running the SuperSLM_Main.py.  Once the server is running to interact with it the user would simply send a remote query over Port 5005 and then receive the response back to the originating machine over port 5006. 
+SuperSLM offers the capabilities to train a Hyper-Focused Small Language Model (SLM) intended for offline local use to minimize breakage in workflow. The intended use for this script is to have a dedicated Server/VM running the SuperSLM_Main.py.  Once the server is running to interact with it the user would simply send a remote query over Port 5005 and then receive the response back to the originating machine over port 5006. While this does utilize LLamav3 and all-MiniLM-L6-v2 these are used for the purpose of sentence parsing and provide human readable output, by default SuperSLM does not have any knowledge base.  
 
 There is no front end to this server as it is intended to be interacted with remotely, however a user can query it locally through its interactive local shell!  
 
@@ -63,4 +63,16 @@ echo "hello world" | nc <IP> 5005
 
 To Receive:  
 nc -l 5006
+
+## Examples  
+Interactive Shell:  
+![server_shell](https://github.com/user-attachments/assets/c188a269-ed7b-41b6-aa12-22c4d45217a9)
+
+Query Example:  
+![python script](https://github.com/user-attachments/assets/8bbe753d-169f-4757-9183-4a28992ec164)    
+![ssh-example](https://github.com/user-attachments/assets/a1786757-64f1-461c-a707-6ffd3b6255a8)
+
+
+
+
 
