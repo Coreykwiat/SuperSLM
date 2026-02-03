@@ -14,6 +14,10 @@ import pickle
 
 CONFIG_FILE = "config.json"
 
+last_query = None
+last_used_indices = []
+rejected_indices = set()
+
 
 def load_config():
     defaults = {
@@ -34,10 +38,7 @@ def load_config():
             json.dump(defaults, f, indent=4)
         data = defaults
 
-    if not os.path.exists(data["docs_directory"]):
-        os.makedirs(data["docs_directory"])
-        print(f"[*] Created missing directory: {data['docs_directory']}")
-
+    os.makedirs(data["docs_directory"], exist_ok=True)
     return data
 
 
@@ -53,257 +54,235 @@ EMBEDDING_MODEL_NAME = cfg["embedding_model_name"]
 client = ollama.Client(host=OLLAMA_URL)
 
 
-def log_event(message):
-    timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    print(f"[{timestamp}] {message}")
+def log_event(msg):
+    ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    print(f"[{ts}] {msg}")
 
 
 def ensure_ollama_models():
-    log_event(f"[*] Connecting to Ollama at {OLLAMA_URL}...")
-
     try:
-        response = client.list()
-        available_models = [m.model for m in response.models]
+        models = [m.model for m in client.list().models]
 
-        # Check LLM model
-        llm_exists = any(m.startswith(LLM_MODEL_NAME) for m in available_models)
-        if not llm_exists:
-            log_event(f"[!] '{LLM_MODEL_NAME}' not found. Pulling...")
+        if not any(m.startswith(LLM_MODEL_NAME) for m in models):
             client.pull(LLM_MODEL_NAME)
-            log_event(f"[*] LLM '{LLM_MODEL_NAME}' is ready.")
-        else:
-            log_event(f"[*] LLM '{LLM_MODEL_NAME}' is ready.")
 
-        embed_exists = any(m.startswith(EMBEDDING_MODEL_NAME) for m in available_models)
-        if not embed_exists:
-            log_event(f"[!] '{EMBEDDING_MODEL_NAME}' not found. Pulling...")
-            log_event("[*] This may take a few minutes on first run...")
+        if not any(m.startswith(EMBEDDING_MODEL_NAME) for m in models):
             client.pull(EMBEDDING_MODEL_NAME)
-            log_event(f"[*] Embedding model '{EMBEDDING_MODEL_NAME}' is ready.")
-        else:
-            log_event(f"[*] Embedding model '{EMBEDDING_MODEL_NAME}' is ready.")
-
 
     except Exception as e:
-        log_event(f"\n[!] CONNECTION ERROR: {e}")
-        log_event("[!] Make sure Ollama is running: 'ollama serve'")
+        log_event(f"[!] Ollama error: {e}")
         sys.exit(1)
 
 
 def get_embedding(text):
     try:
-        response = client.embeddings(
-            model=EMBEDDING_MODEL_NAME,
-            prompt=text
+        return np.array(
+            client.embeddings(
+                model=EMBEDDING_MODEL_NAME,
+                prompt=text
+            )["embedding"]
         )
-        return np.array(response['embedding'])
     except Exception as e:
         log_event(f"[!] Embedding error: {e}")
         return None
 
 
-def cosine_similarity(vec1, vec2):
-    dot_product = np.dot(vec1, vec2)
-    norm1 = np.linalg.norm(vec1)
-    norm2 = np.linalg.norm(vec2)
-    return dot_product / (norm1 * norm2)
+def cosine_similarity(a, b):
+    return np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b))
 
 
-def extract_text(file_path):
-    ext = os.path.splitext(file_path)[1].lower()
-    content = ""
 
+def extract_text(path):
+    ext = os.path.splitext(path)[1].lower()
     try:
         if ext == ".pdf":
-            reader = PdfReader(file_path)
-            content = "\n".join([page.extract_text() for page in reader.pages])
-
-        elif ext == ".docx":
-            doc = Document(file_path)
-            content = "\n".join([para.text for para in doc.paragraphs])
-
-        elif ext in [".xlsx", ".xls"]:
-            df_dict = pd.read_excel(file_path, sheet_name=None)
-            sheet_texts = [f"Sheet: {name}\n{df.to_string(index=False)}"
-                           for name, df in df_dict.items()]
-            content = "\n\n".join(sheet_texts)
-
-        elif ext == ".csv":
-            content = pd.read_csv(file_path).to_string(index=False)
-
-        elif ext in [".html", ".htm"]:
-            # BeautifulSoup4 (US-based, FVEYS compliant)
-            with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
-                content = BeautifulSoup(f, "html.parser").get_text(separator=' ')
-
-        elif ext == ".txt":
-            with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
-                content = f.read()
-
+            return "\n".join(p.extract_text() for p in PdfReader(path).pages)
+        if ext == ".docx":
+            return "\n".join(p.text for p in Document(path).paragraphs)
+        if ext == ".csv":
+            return pd.read_csv(path).to_string(index=False)
+        if ext in [".html", ".htm"]:
+            with open(path, encoding="utf-8", errors="ignore") as f:
+                return BeautifulSoup(f, "html.parser").get_text(" ")
+        if ext == ".txt":
+            with open(path, encoding="utf-8", errors="ignore") as f:
+                return f.read()
     except Exception as e:
-        log_event(f" [!] Error reading {file_path}: {e}")
+        log_event(f"[!] Read error {path}: {e}")
+    return ""
 
-    return content.strip()
 
 
 def reindex_docs():
-    log_event(f"[*] (Re)Indexing docs in {DOCS_DIRECTORY}...")
+    log_event("[*] Re-indexing documents...")
     kb = []
 
-    if not os.path.exists(DOCS_DIRECTORY):
-        os.makedirs(DOCS_DIRECTORY)
-
-    supported_ext = [".pdf", ".docx", ".txt", ".html", ".htm", ".xlsx", ".xls", ".csv"]
-    files = [f for f in os.listdir(DOCS_DIRECTORY)
-             if any(f.lower().endswith(ext) for ext in supported_ext)]
-
-    if not files:
-        log_event("[!] No supported files found in docs folder.")
-        return []
-
-    for filename in files:
+    for filename in os.listdir(DOCS_DIRECTORY):
         path = os.path.join(DOCS_DIRECTORY, filename)
-        log_event(f" > Processing: {filename}")
-        text = extract_text(path)
+        ext = os.path.splitext(filename)[1].lower()
 
-        if text:
+        if ext in (".xlsx", ".xls"):
+            sheets = pd.read_excel(path, sheet_name=None)
+
+            for sheet_name, df in sheets.items():
+                df = df.fillna("")
+
+                for row_idx, row in df.iterrows():
+                    row_text = f"File: {filename}\nSheet: {sheet_name}\nRow: {row_idx}\n"
+                    for col, val in row.items():
+                        row_text += f"{col}: {val}\n"
+
+                    vec = get_embedding(row_text)
+                    if vec is not None:
+                        kb.append({
+                            "text": row_text,
+                            "vec": vec,
+                            "source": f"{filename}::{sheet_name}::row{row_idx}"
+                        })
+
+        elif ext in (".pdf", ".docx", ".txt", ".html", ".htm", ".csv"):
+            text = extract_text(path)
+            if not text:
+                continue
+
             chunks = [text[i:i + 1200] for i in range(0, len(text), 1000)]
-
-            for chunk in chunks:
-                embedding = get_embedding(chunk)
-                if embedding is not None:
+            for c in chunks:
+                vec = get_embedding(c)
+                if vec is not None:
                     kb.append({
-                        "text": chunk,
-                        "vec": embedding,
+                        "text": c,
+                        "vec": vec,
                         "source": filename
                     })
 
-    with open(DB_CACHE_FILE, 'wb') as f:
+    with open(DB_CACHE_FILE, "wb") as f:
         pickle.dump(kb, f)
 
-    log_event(f"[*] Done. {len(kb)} segments indexed.")
+    log_event(f"[*] Indexed {len(kb)} chunks")
     return kb
-
-
-def needs_reindexing():
-    if not os.path.exists(DB_CACHE_FILE):
-        return True
-
-    try:
-        with open(DB_CACHE_FILE, 'rb') as f:
-            db = pickle.load(f)
-
-        indexed_files = set(item['source'] for item in db)
-        supported_ext = [".pdf", ".docx", ".txt", ".html", ".htm", ".xlsx", ".xls", ".csv"]
-        current_files = {f for f in os.listdir(DOCS_DIRECTORY)
-                         if any(f.lower().endswith(ext) for ext in supported_ext)}
-
-        return indexed_files != current_files
-    except:
-        return True
 
 
 def load_resources():
     ensure_ollama_models()
-
-    if needs_reindexing():
-        log_event("[!] Changes detected. Re-training knowledge base...")
-        db = reindex_docs()
-    else:
-        log_event("[*] Knowledge base up-to-date.")
-        with open(DB_CACHE_FILE, 'rb') as f:
-            db = pickle.load(f)
-
-    return db
+    if not os.path.exists(DB_CACHE_FILE):
+        return reindex_docs()
+    with open(DB_CACHE_FILE, "rb") as f:
+        return pickle.load(f)
 
 
-def search(db, query_text, client_ip="LOCAL"):
-    if not db:
-        return "Knowledge base is currently empty. Please add documents to the docs folder."
 
-    log_event(f"[*] Processing query from {client_ip}: {query_text[:50]}...")
-    q_vec = get_embedding(query_text)
+def search(db, query, client_ip="LOCAL"):
+    global last_query, last_used_indices
+
+    q_vec = get_embedding(query)
     if q_vec is None:
-        return "Error: Could not generate query embedding."
-    scores = [(i, cosine_similarity(q_vec, item["vec"])) for i, item in enumerate(db)]
+        return "Embedding failed."
+
+    scores = []
+    for i, item in enumerate(db):
+        sim = cosine_similarity(q_vec, item["vec"])
+        if i in rejected_indices:
+            sim *= 0.1
+        scores.append((i, sim))
+
     scores.sort(key=lambda x: x[1], reverse=True)
-    top_k = min(3, len(scores))
-    top_indices = [scores[i][0] for i in range(top_k)]
-    context = "\n".join([db[idx]['text'] for idx in top_indices])
+
+    top_indices = []
+    for i, _ in scores:
+        if i not in rejected_indices:
+            top_indices.append(i)
+        if len(top_indices) == 3:
+            break
+
+    last_query = query
+    last_used_indices = top_indices.copy()
+
+    context = "\n".join(db[i]["text"] for i in top_indices)
+    sources = ", ".join(set(db[i]["source"] for i in top_indices))
+
     response = client.chat(
         model=LLM_MODEL_NAME,
         messages=[
-            {'role': 'system', 'content': 'Answer briefly based on the provided context.'},
-            {'role': 'user', 'content': f"Context: {context}\n\nQuestion: {query_text}"}
+            {"role": "system", "content": "Answer briefly using the provided context."},
+            {"role": "user", "content": f"Context:\n{context}\n\nQuestion: {query}"}
         ]
     )
-    sources = set(db[idx]['source'] for idx in top_indices)
 
-    return f"SOURCES: {', '.join(sources)}\n\n{response.message.content}"
+    return f"SOURCES: {sources}\n\n{response.message.content}"
 
 
 def socket_server():
     global knowledge_db
 
-    in_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    in_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    in_sock.bind(('0.0.0.0', INPUT_PORT))
-    in_sock.listen(5)
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.bind(("0.0.0.0", INPUT_PORT))
+    s.listen(5)
 
-    log_event(f"[*] LISTENER ACTIVE ON PORT {INPUT_PORT}")
+    log_event(f"[*] Listening on {INPUT_PORT}")
 
     while True:
-        conn, addr = in_sock.accept()
-        client_ip = addr[0]
+        conn, addr = s.accept()
+        ip = addr[0]
 
         try:
-            data = conn.recv(8192).decode('utf-8').strip()
-            if data:
-                response = search(knowledge_db, data, client_ip=client_ip)
+            data = conn.recv(8192).decode().strip()
 
-                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as out_sock:
-                    out_sock.connect((client_ip, OUTPUT_PORT))
-                    out_sock.sendall(response.encode('utf-8'))
+            if data.lower() == "retry":
+                if last_query:
+                    rejected_indices.update(last_used_indices)
+                    response = search(knowledge_db, last_query, ip)
+                else:
+                    response = "Nothing to retry yet."
+            else:
+                response = search(knowledge_db, data, ip)
+
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as out:
+                out.connect((ip, OUTPUT_PORT))
+                out.sendall(response.encode())
 
         except Exception as e:
-            log_event(f"[!] Server Error from {client_ip}: {e}")
-
+            log_event(f"[!] Socket error: {e}")
         finally:
             conn.close()
 
 
-if __name__ == "__main__":
-    log_event("=" * 60)
-    log_event("[i] SmartSLM Starting.....")
-    log_event("[i} Created by Corey Kwiatkowski, for any issues report to https://github.com/Coreykwiat/SuperSLM")
-    log_event("[i] All processing happens offline - Data Will Not Be Shared :)")
-    log_event("[i] Embedding Model: nomic-embed-text (Nomic AI - US)")
-    log_event("=" * 60)
 
+if __name__ == "__main__":
+    log_event("SuperSLM Starting")
     knowledge_db = load_resources()
 
     threading.Thread(target=socket_server, daemon=True).start()
-    log_event(f"[*] Server online using {LLM_MODEL_NAME}.")
+    log_event("[*] Server online")
+    log_event("[i] For any issue report them to [https://github.com/Coreykwiat/SuperSLM]")
+    log_event("[i] All querying is done locally and is not stored by any 3rd party")
+    log_event("[i] In the event of an incorrect answer send SuperSLM the command retry")
 
     while True:
-        ui = input("\n[Local Shell] > ").strip()
+        cmd = input("\n[Local Shell] > ").strip().lower()
 
-        if ui.lower() in ['q', 'exit']:
+        if cmd in ("q", "exit"):
             sys.exit(0)
 
-        elif ui.lower() == 'refresh':
+        elif cmd in ("retry", "Retry"):
+            if last_query:
+                rejected_indices.update(last_used_indices)
+                print(search(knowledge_db, last_query, "127.0.0.1"))
+            else:
+                print("Nothing to retry yet.")
+
+        elif cmd in ("refresh", "Refresh"):
             knowledge_db = reindex_docs()
 
-        elif ui.lower() == 'background':
+        elif cmd in ("background","Background"):
             log_event("[*] Background Mode active. Press ENTER to return.")
             input("")
             log_event("[*] Interactive Mode restored.")
 
-        elif ui.lower() == 'status':
-            log_event(f"[*] Knowledge Base: {len(knowledge_db)} segments")
-            log_event(f"[*] LLM Model: {LLM_MODEL_NAME}")
-            log_event(f"[*] Embedding Model: {EMBEDDING_MODEL_NAME}")
-            log_event(f"[*] SuperSLM: ✓ Active")
+        elif cmd in ("manual", "Manual"):
+            print("[i] Enter 'background' to enter background mode")
+            print("[i] Enter 'refresh' to reindex and create a new model")
+            print("[i] Enter 'retry' to forget previous answer and requery")
 
-        elif ui:
-            print("\n" + search(knowledge_db, ui, client_ip="127.0.0.1"))
+
+        elif cmd:
+            print(search(knowledge_db, cmd, "127.0.0.1"))
